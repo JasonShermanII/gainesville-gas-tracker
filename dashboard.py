@@ -1,15 +1,21 @@
 import streamlit as st
 import requests
 import pandas as pd
-# import random
+import os
+from dotenv import load_dotenv
+
+# Unlock the vault
+load_dotenv()
 
 # Streamlit uses specific commands to render text on the web page
 st.title("Florida Gas Price Tracker")
 st.write("Live data from the U.S. Energy Information Administration (EIA)")
 
 
-# Data Tank || get request || converting the response to dictionary
-url = "https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key=DEMO_KEY&frequency=weekly&data[0]=value&facets[series][]=EMM_EPM0_PTE_SFL_DPG&sort[0][column]=period&sort[0][direction]=desc&length=10"
+
+# Data Tank || get request || converting the response to dictionary || Securely creating protected key
+api_key = os.getenv("EIA_API_KEY")
+url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={api_key}&frequency=weekly&data[0]=value&facets[series][]=EMM_EPM0_PTE_SFL_DPG&sort[0][column]=period&sort[0][direction]=desc&length=10"
 response = requests.get(url)
 data = response.json()
 
@@ -43,10 +49,10 @@ st.dataframe(
 col1, col2, col3 = st.columns(3)
 # Mettric Card in streamlit is desigined to show off important numbers || placing them into the columns made above
 with col1:
-    st.metric(label="Cheapest Gas at", value=f"${lowestPrice:.2f}")
+    st.metric(label="Lowest Weekly Average", value=f"${lowestPrice:.2f}")
 with col2:
-    st.metric(label="Mean Value of Gas in Town", value=f"${meanPrice:.2f}")
+    st.metric(label="Mean Over Period", value=f"${meanPrice:.2f}")
 with col3:    
-    st.metric(label="Most Expensive Gas in Town", value=f"${highestPrice:.2f}")
+    st.metric(label="Highest Weekly Average", value=f"${highestPrice:.2f}")
 
 

@@ -90,27 +90,22 @@ def get_station_network(base_price):
 # This @ saves it to remeber all available routes and load them instantiously rather than calculate every time
 # Each location takes a longer period on first load up but after that its much faster
 @st.cache_data(show_spinner=False)
+# --- OSRM Routing Engine ---
+@st.cache_data(show_spinner=False)
 def get_real_drive_data(lat1, lon1, lat2, lon2):
-    # Notice the coordinate flip for OSRM: lon, lat
     url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
-    
     try:
         res = requests.get(url, timeout=5)
         data = res.json()
-        
         if data.get("code") == "Ok":
-            # Extract distance in meters and convert to miles
-            meters = data["routes"][0]["distance"]
-            miles = meters / 1609.34
-            
-            # Extract the actual street by street path for the GTA like minimap
+            # Data is given in meters need to convert to miles
+            miles = data["routes"][0]["distance"] / 1609.34
+            mins = data["routes"][0]["duration"] / 60
             route_geometry = data["routes"][0]["geometry"]
-            
-            return round(miles, 2), route_geometry
+            return round(miles, 2), round(mins), route_geometry
     except Exception:
         pass
-    
-    return None, None
+    return None, None, None
 
 
 
@@ -228,15 +223,18 @@ eligible_stations["display_price"] = eligible_stations.apply(
 # We have to fetch the real road distance and the street geometry for each station
 route_geometries = []
 actual_miles = []
+actual_mins = []
 
 for index, row in eligible_stations.iterrows():
-    miles, geo = get_real_drive_data(user_lat, user_lon, row["lat"], row["lon"])
+    miles, mins, geo = get_real_drive_data(user_lat, user_lon, row["lat"], row["lon"])
     
     # If the API fails, fallback to an arbitrary high number so it doesn't break
     actual_miles.append(miles if miles else 99.9)
+    actual_mins.append(mins if mins else 99)
     route_geometries.append(geo)
 
 eligible_stations["one_way_miles"] = actual_miles
+eligible_stations["drive_time_mins"] = actual_mins
 eligible_stations["geometry"] = route_geometries
 
 # --- The missing math & Sorting logic ---
@@ -272,16 +270,15 @@ with col_a:
     st.metric(
         label="Top Recommendation",
         value=best_station["name"],
-        delta=f"${best_station['price']:.2f}/gal"
+        delta=f"{best_station['display_price']}/gal"
     )
 with col_b:
     st.metric(
         label="Net Effective Cost (Pump + Drive)",
         value=f"${best_station['net_total_cost']:.2f}",
-        delta=f"{best_station['one_way_miles']} mi away"
+        delta=f"{best_station['drive_time_mins']} min drive ({best_station['one_way_miles']} mi)"
     )
 with col_c:
-    # Compare optimal vs nearest
     savings_vs_nearest = nearest_station["net_total_cost"] - best_station["net_total_cost"]
     st.metric(
         label="Net Savings vs Nearest Station",
@@ -290,9 +287,30 @@ with col_c:
         delta_color="normal" if savings_vs_nearest > 0 else "off"
     )
 
+# --- Route Breakdown Expander ---
+with st.expander("🚘 View Trip Logistics Breakdown"):
+    st.write(f"**Target:** {best_station['name']}")
+    st.write(f"**One-Way Distance:** {best_station['one_way_miles']} miles ({best_station['drive_time_mins']} minutes)")
+    st.write(f"**Fuel Burned on Trip:** ${(best_station['round_trip_miles'] / vehicle_mpg) * benchmarkPriceRegular:.2f} (Round-Trip)")
+    st.write(f"**Total at Pump:** {gallons_needed} gal × {best_station['display_price']} = ${best_station['pump_total']:.2f}")
+
+# --- Loss Aversion Upsell (Sam's Club logic) ---
+# If Sam's Club isn't the winner, and they don't have a membership, show what they left on the table
+sams_club_data = ranked_df[ranked_df["name"] == "Sam's Club (Butler Plaza)"].iloc[0]
+if "Sam's Club" not in reward_promotions and best_station["name"] != "Sam's Club (Butler Plaza)":
+    # Calculate what Sam's WOULD have cost without the $99 penalty
+    real_sams_price = sams_club_data["standard_price"]
+    sams_pump_total = real_sams_price * gallons_needed
+    sams_net_total = sams_pump_total + sams_club_data["drive_cost"]
+    missed_savings = best_station["net_total_cost"] - sams_net_total
+    
+    if missed_savings > 0:
+        st.info(f"💡 **Opportunity Cost Alert:** A Sam's Club membership would have saved you **${missed_savings:.2f}** on this exact trip.")
+
 # --- Comparison Table & Map ---
 st.divider()
 st.subheader("Gainesville Gas Market")
+st.caption("Sorted intelligently by **Net Effective Cost** (Total at pump + Round-trip gas burned driving there).")
 
 display_df = ranked_df[[
     "name", "display_price", "one_way_miles", "drive_cost", "pump_total", "net_total_cost"
@@ -300,7 +318,7 @@ display_df = ranked_df[[
     "name": "Station",
     "display_price": "Pump Price",
     "one_way_miles": "Distance (mi)",
-    "drive_cost": "Trip Cost ($)",
+    "drive_cost": "Round-Trip Cost ($)",  # Renamed for absolute clarity
     "pump_total": "Gas Subtotal ($)",
     "net_total_cost": "Net Cost ($)"
 })
@@ -308,9 +326,8 @@ display_df = ranked_df[[
 st.dataframe(
     display_df,
     column_config={
-        # We removed Pump Price from this list because it's already formatted as text!
         "Distance (mi)": st.column_config.NumberColumn(format="%.1f mi"),
-        "Trip Cost ($)": st.column_config.NumberColumn(format="$%.2f"),
+        "Round-Trip Cost ($)": st.column_config.NumberColumn(format="$%.2f"),
         "Gas Subtotal ($)": st.column_config.NumberColumn(format="$%.2f"),
         "Net Cost ($)": st.column_config.NumberColumn(format="$%.2f"),
     },
